@@ -63,6 +63,7 @@ module tt_um_ppu_aebarthyi (
 
   wire [7:0] posit_add_o, posit_mult_o;
   wire start_add, start_mult, done_add, done_mult;
+  wire ready_o, valid_o;
   assign opcode_reg_d = ui_in[4:3];
   assign uio_oe = {8{(ppu_state_q == COMPUTING) | (ppu_state_q == COMPLETE)}};
   assign start_add = (ppu_state_q == COMPUTING) & (opcode_reg_q == ADD);
@@ -70,10 +71,9 @@ module tt_um_ppu_aebarthyi (
 
   wire zero_add, inf_add, zero_mult, inf_mult;
   reg zero, inf;
-  // All output pins must be assigned. If not used, assign to 0.
 
-  posit_add #(.N(8),.es(4)) posit_adder(input1_reg_q, input2_reg_q, start_add, posit_add_o, inf_add, zero_add, done_add);
-  posit_mult #(.N(8),.es(4)) posit_multiplier(input1_reg_q, input2_reg_q, start_mult, posit_mult_o, inf_mult, zero_mult, done_mult);
+  posit_add #(.N(8),.es(2)) posit_adder(input1_reg_q, input2_reg_q, start_add, posit_add_o, inf_add, zero_add, done_add);
+  posit_mult #(.N(8),.es(2)) posit_multiplier(input1_reg_q, input2_reg_q, start_mult, posit_mult_o, inf_mult, zero_mult, done_mult);
 
   //OUTPUT LOGIC
   always @(*) begin
@@ -119,20 +119,9 @@ module tt_um_ppu_aebarthyi (
   
   assign uio_out = output_reg_q;
   reg [7:0] uo_out_l;
+  assign ready_o = (ppu_state_q == WAIT_IN1) | (ppu_state_q == WAIT_IN2_INST);
+  assign valid_o = (ppu_state_q == COMPLETE);
 
-  always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-        uo_out_l <= {4'b0, 1'b1, 3'b0};
-    end else if (ppu_state_q == COMPUTING) begin
-        if(done_add | done_mult) uo_out_l <= {4'b0, 1'b1, inf, zero, 1'b1};
-        else uo_out_l <= 8'b0;
-    end else if (ppu_state_q == COMPLETE) begin
-        uo_out_l <= {4'b0, 1'b1, inf, zero, 1'b1};
-    end else begin
-        uo_out_l <= {4'b0, 1'b1, 3'b0};
-    end
-  end
-
-  assign uo_out = uo_out_l;
+  assign uo_out = {4'b0, ready_o, inf, zero, valid_o};
 
 endmodule

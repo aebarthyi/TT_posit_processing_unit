@@ -130,11 +130,11 @@ endmodule
 
 /////////////////////////
 module DSR_left_N_S(a,b,c);
-        parameter N=16;
-        parameter S=4;
-        input [N-1:0] a;
-        input [S-1:0] b;
-        output [N-1:0] c;
+parameter N=16;
+parameter S=4;
+input [N-1:0] a;
+input [S-1:0] b;
+output [N-1:0] c;
 
 wire [N-1:0] tmp [S-1:0];
 assign tmp[0]  = b[0] ? a << 7'd1  : a; 
@@ -151,11 +151,11 @@ endmodule
 
 /////////////////////////
 module DSR_right_N_S(a,b,c);
-        parameter N=16;
-        parameter S=4;
-        input [N-1:0] a;
-        input [S-1:0] b;
-        output [N-1:0] c;
+parameter N=16;
+parameter S=4;
+input [N-1:0] a;
+input [S-1:0] b;
+output [N-1:0] c;
 
 wire [N-1:0] tmp [S-1:0];
 assign tmp[0]  = b[0] ? a >> 7'd1  : a; 
@@ -173,14 +173,14 @@ endmodule
 
 module LOD_N (in, out);
 
-  function [31:0] log2;
-    input reg [31:0] value;
-    begin
-      value = value-1;
-      for (log2=0; value>0; log2=log2+1)
-	value = value>>1;
-    end
-  endfunction
+function [31:0] log2;
+input reg [31:0] value;
+begin
+    value = value-1;
+    for (log2=0; value>0; log2=log2+1)
+value = value>>1;
+end
+endfunction
 
 parameter N = 64;
 parameter S = log2(N); 
@@ -194,22 +194,22 @@ endmodule
 
 module LOD (in, out, vld);
 
-  function [31:0] log2;
-    input reg [31:0] value;
-    begin
-      value = value-1;
-      for (log2=0; value>0; log2=log2+1)
-	value = value>>1;
-    end
-  endfunction
+function [31:0] log2;
+input reg [31:0] value;
+begin
+    value = value-1;
+    for (log2=0; value>0; log2=log2+1)
+value = value>>1;
+end
+endfunction
 
 
 parameter N = 64;
 parameter S = log2(N);
 
-   input [N-1:0] in;
-   output [S-1:0] out;
-   output vld;
+input [N-1:0] in;
+output [S-1:0] out;
+output vld;
 
   generate
     if (N == 2)
