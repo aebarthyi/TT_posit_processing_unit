@@ -65,7 +65,6 @@ module tt_um_ppu_aebarthyi (
   wire [7:0] posit_add_o, posit_mult_o, posit_div_o;
   wire start_add, start_mult, start_div, done_add, done_mult, done_div;
   wire ready_o, valid_o;
-  assign opcode_reg_d = ui_in[4:3];
   assign uio_oe = {8{(ppu_state_q == COMPUTING) | (ppu_state_q == COMPLETE)}};
   assign start_add = (ppu_state_q == COMPUTING) & (opcode_reg_q == ADD);
   assign start_mult = (ppu_state_q == COMPUTING) & (opcode_reg_q == MULT);
