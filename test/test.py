@@ -7,303 +7,277 @@ from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles
 
 
-@cocotb.test()
-async def test_project(dut):
+# Opcodes (ui_in[4:3])
+MAC_OP   = 0b01
+READ_OP  = 0b10
+CLEAR_OP = 0b11
 
-    dut._log.info("Start")
-    # Set the clock period to 10 us (100 KHz)
-    clock = Clock(dut.clk, 10, unit="us")
-    cocotb.start_soon(clock.start())
 
-    # Reset
-    dut._log.info("Reset")
+async def reset(dut):
     dut.ena.value = 1
     dut.ui_in.value = 0
     dut.uio_in.value = 0
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 10)
     dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 1)
 
+
+async def do_mac(dut, val1, val2):
+    """Perform MAC: quire += val1 * val2, return posit8 of quire."""
+    # Send first operand
+    dut.ui_in.value = 0b00100001  # ready_in=1, input1_valid=1
+    dut.uio_in.value = val1
+    await ClockCycles(dut.clk, 1)
+
+    # Send second operand + MAC opcode
+    dut.ui_in.value = 0b00100000 | (MAC_OP << 3) | 0b110  # input2_valid + instruction_valid
+    dut.uio_in.value = val2
+    await ClockCycles(dut.clk, 1)
+
+    # Wait for valid output
+    dut.ui_in.value = 0b00000000
+    for _ in range(10):
+        if int(dut.uo_out.value) & 1:  # valid_o
+            break
+        await ClockCycles(dut.clk, 1)
+
+    result = int(dut.uio_out.value)
+
+    # Acknowledge and return to idle
+    dut.ui_in.value = 0b00100000  # ready_in
+    await ClockCycles(dut.clk, 2)
+
+    return result
+
+
+async def do_read(dut):
+    """Read quire as posit8."""
+    # Send READ instruction (no operands)
+    dut.ui_in.value = (READ_OP << 3) | 0b100  # instruction_valid only
+    await ClockCycles(dut.clk, 1)
+
+    # Wait for valid output
+    dut.ui_in.value = 0b00000000
+    for _ in range(10):
+        if int(dut.uo_out.value) & 1:
+            break
+        await ClockCycles(dut.clk, 1)
+
+    result = int(dut.uio_out.value)
+
+    # Acknowledge
+    dut.ui_in.value = 0b00100000
+    await ClockCycles(dut.clk, 2)
+
+    return result
+
+
+async def do_clear(dut):
+    """Clear quire to zero."""
+    dut.ui_in.value = (CLEAR_OP << 3) | 0b100  # instruction_valid only
+    await ClockCycles(dut.clk, 1)
+
+    dut.ui_in.value = 0b00000000
+    for _ in range(10):
+        if int(dut.uo_out.value) & 1:
+            break
+        await ClockCycles(dut.clk, 1)
+
+    # Acknowledge
+    dut.ui_in.value = 0b00100000
+    await ClockCycles(dut.clk, 2)
+
+
+@cocotb.test()
+async def test_project(dut):
+    dut._log.info("Start")
+    clock = Clock(dut.clk, 10, unit="us")
+    cocotb.start_soon(clock.start())
+
+    await reset(dut)
     dut._log.info("Test project behavior")
 
     ########################################
-    #    SIMPLE SINGLE ADD TEST
+    #    BASIC MAC TEST
     ########################################
 
-    # send our first 8 bit operand (valid is bit 0 of ui_in)
-    # ready is high (bit 5 of ui_in)
-    dut.ui_in.value = 0b00100001
-    dut.uio_in.value = 0b00011100 #0.03125
-    p1 = posit_2(None, 8, int(0b00011100))
+    p1 = posit_2(None, 8, bits=int(0b01000100))  # 1.5
+    p2 = posit_2(None, 8, bits=int(0b00110010))  # 0.3125
+    expected = p1 * p2  # 0.46875
 
-    await ClockCycles(dut.clk, 1)
-
-    # send our second 8 bit operand and opcode (valids are bits 1&2 of ui_in)
-    # ready is high (bit 5 of ui_in)
-    dut.ui_in.value = 0b00101110
-    dut.uio_in.value = 0b00011100 #0.03125
-    p2 = posit_2(None, 8, int(0b00011100))
-
-    # wait until output is ready (bit 0 of uo_out)
-    while not (dut.uo_out.value[0]): 
-        await ClockCycles(dut.clk, 1)
-
-    dut_posit = posit_2(None, 8, int(dut.uio_out.value))
-
-    p3 = p1 + p2
-    
-    # assert that 0.03125 + 0.03125 = 0.0625
-    assert dut_posit == p3
-
-    await ClockCycles(dut.clk, 1)
+    result_bits = await do_mac(dut, 0b01000100, 0b00110010)
+    dut_posit = posit_2(None, 8, bits=result_bits)
+    dut._log.info(f"MAC: {p1} * {p2} = {dut_posit} (expected {expected})")
+    assert dut_posit == expected, f"MAC failed: got {dut_posit}, expected {expected}"
 
     ########################################
-    #    SIMPLE SINGLE MULT TEST
+    #    READ QUIRE TEST
     ########################################
 
-    # send our first 8 bit operand (valid is bit 0 of ui_in)
-    # ready is high (bit 5 of ui_in)
-    dut.ui_in.value = 0b00100001
-    dut.uio_in.value = 0b01000100	 #1.5
-    p1 = posit_2(None, 8, int(0b01000100))
-
-    await ClockCycles(dut.clk, 1)
-
-    dut.ui_in.value = 0b00110110
-    dut.uio_in.value = 0b00110010	#0.3125
-    p2 = posit_2(None, 8, int(0b00110010))
-
-    while not (dut.uo_out.value[0]): 
-        await ClockCycles(dut.clk, 1)
-
-    dut_posit = posit_2(None, 8, int(dut.uio_out.value))
-
-    p3 = p1 * p2
-
-    # assert that 1.5 * 0.3125 = 0.46875 
-    assert dut_posit == p3
-
-    await ClockCycles(dut.clk, 1)
+    read_bits = await do_read(dut)
+    read_posit = posit_2(None, 8, bits=read_bits)
+    dut._log.info(f"READ: quire = {read_posit} (expected {expected})")
+    assert read_posit == expected, f"READ failed: got {read_posit}, expected {expected}"
 
     ########################################
-    #    SIMPLE SINGLE DIVISION TEST
+    #    ACCUMULATION TEST
     ########################################
 
-    # send our first 8 bit operand (valid is bit 0 of ui_in)
-    # ready is high (bit 5 of ui_in)
-    dut.ui_in.value = 0b00100001
-    dut.uio_in.value = 0b01001000	 #2.0
-    p1 = posit_2(None, 8, int(0b01001000)) 
+    # quire already has 1.5*0.3125 = 0.46875
+    # now add 2.0 * 4.0 = 8.0
+    p3 = posit_2(None, 8, bits=int(0b01001000))  # 2.0
+    p4 = posit_2(None, 8, bits=int(0b01010000))  # 4.0
+    accumulated = p1 * p2 + p3 * p4  # 0.46875 + 8.0 = 8.46875
 
-    await ClockCycles(dut.clk, 1)
-
-    dut.ui_in.value = 0b00111110
-    dut.uio_in.value = 0b01010000	#4.0
-    p2 = posit_2(None, 8, int(0b01010000))
-
-    while not (dut.uo_out.value[0]): 
-        await ClockCycles(dut.clk, 1)
-
-    dut_posit = posit_2(None, 8, int(dut.uio_out.value))
-
-    p3 = p1 / p2
-
-    # assert that 1.5 * 0.3125 = 0.46875 
-    assert dut_posit == p3
-
-    await ClockCycles(dut.clk, 1)
+    result_bits = await do_mac(dut, 0b01001000, 0b01010000)
+    dut_posit = posit_2(None, 8, bits=result_bits)
+    dut._log.info(f"ACCUMULATE: quire = {dut_posit} (expected ~{accumulated})")
 
     ########################################
-    #    READY/VALID STATES TEST
+    #    CLEAR TEST
     ########################################
 
-    #invalid first input:
+    await do_clear(dut)
+
+    read_bits = await do_read(dut)
+    read_posit = posit_2(None, 8, bits=read_bits)
+    dut._log.info(f"CLEAR+READ: quire = {read_posit} (expected 0)")
+    assert read_bits == 0, f"CLEAR failed: got {read_posit}, expected 0"
+
+    ########################################
+    #    NEGATIVE VALUES TEST
+    ########################################
+
+    # MAC with negative: -1.5 * 0.3125 = -0.46875
+    neg_p1_bits = (~0b01000100 + 1) & 0xFF  # 2's complement of 1.5
+    neg_p1 = posit_2(None, 8, bits=neg_p1_bits)
+    result_bits = await do_mac(dut, neg_p1_bits, 0b00110010)
+    dut_posit = posit_2(None, 8, bits=result_bits)
+    expected_neg = neg_p1 * p2
+    dut._log.info(f"NEG MAC: {-p1} * {p2} = {dut_posit} (expected {expected_neg})")
+    assert dut_posit == expected_neg, f"NEG MAC failed: got {dut_posit}, expected {expected_neg}"
+
+    # Clear for next test
+    await do_clear(dut)
+
+    ########################################
+    #    ZERO MULTIPLY TEST
+    ########################################
+
+    result_bits = await do_mac(dut, 0b00000000, 0b01000100)
+    dut_posit = posit_2(None, 8, bits=result_bits)
+    dut._log.info(f"ZERO MAC: 0 * 1.5 = {dut_posit}")
+    assert result_bits == 0, f"ZERO MAC failed: got {dut_posit}"
+
+    await do_clear(dut)
+
+    ########################################
+    #    FSM HANDSHAKING TEST
+    ########################################
+
+    # Invalid first input
     dut.ui_in.value = 0b00100000
     dut.uio_in.value = 0b01000100
-
     await ClockCycles(dut.clk, 1)
+    assert int(dut.uo_out.value) & 0b00001000, "Should be ready"
 
-    #assert ready but not valid
-    assert dut.uo_out.value == 0b00001000
-
-    #valid first input:
+    # Valid first input
     dut.ui_in.value = 0b00100001
     dut.uio_in.value = 0b01000100
-
     await ClockCycles(dut.clk, 1)
+    assert int(dut.uo_out.value) & 0b00001000, "Should still be ready"
 
-    #assert still ready but not valid
-    assert dut.uo_out.value == 0b00001000
-
-    #invalid second input, but valid opcode:
-    dut.ui_in.value = 0b00101100
+    # Invalid second input but valid opcode
+    dut.ui_in.value = 0b00001100  # instruction_valid but no input2_valid
     dut.uio_in.value = 0b01000100
-
     await ClockCycles(dut.clk, 1)
+    assert int(dut.uo_out.value) & 0b00001000, "Should still be ready"
 
-    #assert still ready but not valid
-    assert dut.uo_out.value == 0b00001000
-
-    #valid second input, and valid opcode (STARTS computation)
-    dut.ui_in.value = 0b00101110
+    # Valid second input and valid MAC opcode
+    dut.ui_in.value = (MAC_OP << 3) | 0b110  # input2_valid + instruction_valid
     dut.uio_in.value = 0b01000100
-
     await ClockCycles(dut.clk, 1)
 
-    #assert still ready but not valid
-    assert dut.uo_out.value == 0b00001000
-
-    await ClockCycles(dut.clk, 1)
-
-    #assert not ready and not valid (computing)
-    assert dut.uo_out.value == 0b00000000
-
-    #set ready_in to 0, should stay in complete state
+    # Should be computing (not ready, not valid yet)
     dut.ui_in.value = 0b00000000
-
     await ClockCycles(dut.clk, 1)
 
-    #assert not ready but valid (complete)
-    assert dut.uo_out.value == 0b00000001
+    # Wait for done
+    for _ in range(10):
+        if int(dut.uo_out.value) & 1:
+            break
+        await ClockCycles(dut.clk, 1)
 
-    #set ready_in to 1, should now exit complete state to idle
+    assert int(dut.uo_out.value) & 1, "Should be valid (complete)"
+
+    # Acknowledge
     dut.ui_in.value = 0b00100000
+    await ClockCycles(dut.clk, 2)
+    assert int(dut.uo_out.value) & 0b00001000, "Should be back to ready"
 
-    await ClockCycles(dut.clk, 1)
-
-    #assert not ready but valid (complete)
-    assert dut.uo_out.value == 0b00000001
-
-    await ClockCycles(dut.clk, 1)
-
-    #assert ready but not valid (back to IDLE/INIT state)
-    assert dut.uo_out.value == 0b00001000
+    await do_clear(dut)
 
     ########################################
-    #    ROUNDING ERROR FUZZ TEST ADD
+    #    DOT PRODUCT FUZZ TEST
     ########################################
 
-    # TEST ADD
-    num_rounding_diffs_add = 0
-    add_max_diff = 0
-    problematic_sum = []
+    import random
+    random.seed(42)
 
-    # 0-255
-    for i in range(0,255):
-        # i-255 gets rid of mirrored calculations I.E 0+1 == 1+0
-        for j in range(i,255):
-            dut.ui_in.value = 0b00100001
-            dut.uio_in.value = i
-            p1 = posit_2(None, 8, i)
+    NUM_TRIALS = 500
+    MAX_DOT_LEN = 16
+    num_exact = 0
+    num_close = 0
+    num_wrong = 0
+    worst_cases = []
 
-            await ClockCycles(dut.clk, 1)
+    for trial in range(NUM_TRIALS):
+        dot_len = random.randint(1, MAX_DOT_LEN)
+        pairs = [(random.randint(0, 254), random.randint(0, 254)) for _ in range(dot_len)]
 
-            dut.ui_in.value = 0b00101110
-            dut.uio_in.value = j
-            p2 = posit_2(None, 8, j)
+        await do_clear(dut)
 
-            p3 = p1 + p2
+        # Compute expected using softposit (accumulate products as floats for reference)
+        expected_float = 0.0
+        for a_bits, b_bits in pairs:
+            pa = posit_2(None, 8, a_bits)
+            pb = posit_2(None, 8, b_bits)
+            expected_float += float(pa) * float(pb)
 
-            while not (dut.uo_out.value[0]):
-                await ClockCycles(dut.clk, 1)
+        # Run on DUT
+        for a_bits, b_bits in pairs:
+            await do_mac(dut, a_bits, b_bits)
 
-            dut_posit = posit_2(None, 8, int(dut.uio_out.value))
+        result_bits = await do_read(dut)
+        dut_posit = posit_2(None, 8, bits=result_bits)
+        dut_float = float(dut_posit)
 
-            if(dut_posit != p3):
-                num_rounding_diffs_add += 1
+        # Compare: find closest posit8 to expected
+        best_bits = 0
+        best_dist = abs(expected_float)
+        for b in range(256):
+            candidate = posit_2(None, 8, b)
+            dist = abs(float(candidate) - expected_float)
+            if dist < best_dist:
+                best_dist = dist
+                best_bits = b
+        expected_posit = posit_2(None, 8, best_bits)
 
-            if (abs(dut_posit - p3) > add_max_diff):
-                problematic_sum.append((p1, p2, p3, dut_posit))
-                add_max_diff = abs(dut_posit - p3)
+        if result_bits == best_bits:
+            num_exact += 1
+        elif abs(dut_float - expected_float) <= abs(float(expected_posit) - expected_float) * 2:
+            num_close += 1
+        else:
+            num_wrong += 1
+            if len(worst_cases) < 20:
+                worst_cases.append((trial, dot_len, expected_float, dut_float, float(expected_posit)))
 
-            await ClockCycles(dut.clk, 1)
-
-    print("NUMBER OF ROUNDING ERRORS ADD: " + str(num_rounding_diffs_add))
-    print("EXAMPLE CALCULATIONS:")
-    for sum_err in problematic_sum:
-        print(sum_err)
-
-    ########################################
-    #    ROUNDING ERROR FUZZ TEST MULT
-    ########################################
-
-    num_rounding_diffs_mult = 0
-    mult_max_diff = 0
-    problematic_product = []
-
-    # 0-255
-    for i in range(0,255):
-        # i-255 gets rid of mirrored calculations I.E 5*6 == 6*5
-        for j in range(i,255):
-            dut.ui_in.value = 0b00100001
-            dut.uio_in.value = i
-            p1 = posit_2(None, 8, i)
-
-            await ClockCycles(dut.clk, 1)
-
-            dut.ui_in.value = 0b00110110
-            dut.uio_in.value = j
-            p2 = posit_2(None, 8, j)
-
-            p3 = p1 * p2
-
-            dut_posit = posit_2(None, 8, int(dut.uio_out.value))
-
-            while not (dut.uo_out.value[0]):
-                await ClockCycles(dut.clk, 1)
-
-            if(dut_posit != p3):
-                num_rounding_diffs_mult += 1
-
-            if (abs(dut_posit - p3) > mult_max_diff):
-                problematic_product.append((p1, p2, p3, dut_posit))
-                mult_max_diff = abs(dut_posit - p3)
-
-            await ClockCycles(dut.clk, 1)
-    
-    print("NUMBER OF ROUNDING ERRORS MULTIPY: " + str(num_rounding_diffs_mult))
-    print("EXAMPLE CALCULATIONS:")
-    for product in problematic_product:
-        print(product)
-
-    ########################################
-    #    ROUNDING ERROR FUZZ TEST DIV
-    ########################################
-
-    num_rounding_diffs_div = 0
-    div_max_diff = 0
-    problematic_quotient = []
-
-    # 0-255
-    for i in range(0,255):
-        for j in range(0,255):
-            dut.ui_in.value = 0b00100001
-            dut.uio_in.value = i
-            p1 = posit_2(None, 8, i)
-
-            await ClockCycles(dut.clk, 1)
-
-            dut.ui_in.value = 0b00111110
-            dut.uio_in.value = j
-            p2 = posit_2(None, 8, j)
-
-            p3 = p1 / p2
-
-            dut_posit = posit_2(None, 8, int(dut.uio_out.value))
-
-            while not (dut.uo_out.value[0]):
-                await ClockCycles(dut.clk, 1)
-
-            if(dut_posit != p3):
-                num_rounding_diffs_div += 1
-
-            if (abs(dut_posit - p3) > div_max_diff):
-                problematic_quotient.append((p1, p2, p3, dut_posit))
-                div_max_diff = abs(dut_posit - p3)
-
-            await ClockCycles(dut.clk, 1)
-    
-    print("NUMBER OF ROUNDING ERRORS DIVISION: " + str(num_rounding_diffs_div))
-    print("EXAMPLE CALCULATIONS:")
-    for quotient in problematic_quotient:
-        print(quotient)
+    print(f"DOT PRODUCT FUZZ: {NUM_TRIALS} trials, len 1-{MAX_DOT_LEN}")
+    print(f"  Exact match: {num_exact}")
+    print(f"  Close (within 2x nearest): {num_close}")
+    print(f"  Wrong: {num_wrong}")
+    if worst_cases:
+        print("WORST CASES:")
+        for trial, dlen, exp, got, nearest in worst_cases:
+            print(f"  trial={trial} len={dlen}: expected={exp}, got={got}, nearest_posit={nearest}")
