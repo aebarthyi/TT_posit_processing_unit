@@ -68,63 +68,62 @@ wire [Bs+es+1:0] scale_w;
 add_N_Cin #(.N(Bs+es+1)) scale_add({r1_w, e1_w}, {r2_w, e2_w}, mant_ovf_w, scale_w);
 
 // =============================================
-// PRODUCT TO 64-BIT FIXED POINT
+// PRODUCT TO FIXED POINT
 // =============================================
 
-// prod_mN_w is (2*(N-es)+2) bits with leading 1 at MSB
-// Product value = prod_mN_w * 2^(scale_w - (2*(N-es)+1))
-// In Q32.32: quire_val = int_val * 2^-32
-// So fixed_point_int = prod_mN_w * 2^(scale_w - (2*(N-es)+1) + 32)
-//                    = prod_mN_w << (scale_w + 32 - 2*(N-es) - 1)
-//                    = prod_mN_w << (scale_w + 32 - 11)  [for N=8,es=2: 2*6+1=13, wait]
-// 2*(N-es)+1 = 2*6+1 = 13. prod_mN_w MSB at bit 13. No wait:
-// [2*(N-es)+1:0] means MSB index is 2*(N-es)+1 = 13. Width is 14 bits.
-// Hmm let me recount. m1 is [N-es:0] = 7 bits. m2 is 7 bits.
-// prod = m1*m2: max = (2^7-1)^2 = 16129, fits in 14 bits.
-// [2*(N-es)+1:0] = [13:0] = 14 bits. MSB is bit 13.
-// After normalization, leading 1 is at bit 13.
-//
-// Product value = prod_mN_w[13:0] * 2^(scale_w - 13)
-// Fixed point = prod_mN_w * 2^(scale_w - 13 + 32) = prod_mN_w << (scale_w + 19)
+localparam PROD_W = 2*(N-es)+2;
+localparam SHIFT_BASE = QBP - (PROD_W - 1);
 
-localparam PROD_W = 2*(N-es)+2; // 14 bits for N=8,es=2
-localparam SHIFT_BASE = QBP - (PROD_W - 1); // 32 - 13 = 19
-
-// Compute left shift amount: scale_w + SHIFT_BASE
-// scale_w is [Bs+es+1:0] = [6:0] = 7 bits signed
-// SHIFT_BASE = 19
-// Result range: scale_w in [-48,48] + 19 = [-29, 67]
 wire signed [7:0] raw_shift_w = $signed({scale_w[Bs+es+1], scale_w}) + SHIFT_BASE[7:0];
 
-wire prod_udf_w = raw_shift_w[7]; // negative shift = underflow
-wire prod_ovf_w = (~raw_shift_w[7]) & (raw_shift_w > (QUIRE_W - PROD_W)); // > 50
+wire prod_udf_w = raw_shift_w[7];
+wire prod_ovf_w = (~raw_shift_w[7]) & (raw_shift_w > (QUIRE_W - PROD_W));
 
 wire [5:0] left_shift_amt_w = prod_udf_w ? 6'd0 :
 	(prod_ovf_w ? 6'd50 : raw_shift_w[5:0]);
 
 wire [QUIRE_W-1:0] prod_base_w = {{(QUIRE_W-PROD_W){1'b0}}, prod_mN_w};
-wire [QUIRE_W-1:0] prod_shifted_w;
-DSR_left_N_S #(.N(QUIRE_W), .S(6)) prod_shift(
-	.a(prod_base_w), .b(left_shift_amt_w), .c(prod_shifted_w));
 
+// =============================================
+// SHARED BARREL SHIFTER
+// =============================================
+// Cycle 0 (done_r=0): shifts product into quire position
+// Cycle 1 (done_r=1): normalizes quire magnitude for posit conversion
+
+wire quire_sign_w = quire_r[QUIRE_W-1];
+wire [QUIRE_W-1:0] quire_abs_w = quire_sign_w ? -quire_r : quire_r;
+
+wire [5:0] lzc_w;
+LOD_N #(.N(QUIRE_W)) quire_lod(.in(quire_abs_w), .out(lzc_w));
+
+wire [QUIRE_W-1:0] shared_shift_in_w = done_r ? quire_abs_w : prod_base_w;
+wire [5:0] shared_shift_amt_w = done_r ? lzc_w : left_shift_amt_w;
+wire [QUIRE_W-1:0] shared_shift_out_w;
+DSR_left_N_S #(.N(QUIRE_W), .S(6)) shared_shift(
+	.a(shared_shift_in_w), .b(shared_shift_amt_w), .c(shared_shift_out_w));
+
+// Product placement (valid when done_r=0)
 wire [QUIRE_W-1:0] prod_fixed_w = (prod_udf_w | prod_zero_w | prod_inf_w) ?
-	{QUIRE_W{1'b0}} : prod_shifted_w;
+	{QUIRE_W{1'b0}} : shared_shift_out_w;
 
-// 2's complement for negative products
-wire [QUIRE_W-1:0] prod_tc_w = prod_sign_w ? -prod_fixed_w : prod_fixed_w;
+// Quire normalized (valid when done_r=1)
+wire [QUIRE_W-1:0] quire_shifted_w = shared_shift_out_w;
 
 // =============================================
 // QUIRE REGISTER
 // =============================================
+// Merged negator: conditional complement + carry-in instead of separate negation
 
 reg [QUIRE_W-1:0] quire_r;
 reg ovf_r;
 
-wire [QUIRE_W-1:0] quire_next_w = quire_r + prod_tc_w;
+wire [QUIRE_W-1:0] prod_comp_w = prod_sign_w ? ~prod_fixed_w : prod_fixed_w;
+wire [QUIRE_W-1:0] quire_next_w = quire_r + prod_comp_w + {{QUIRE_W-1{1'b0}}, prod_sign_w};
 
-// Overflow detection: sign of quire and product agree but result sign differs
-wire acc_ovf_w = (~quire_r[QUIRE_W-1] & ~prod_tc_w[QUIRE_W-1] & quire_next_w[QUIRE_W-1]) |
-	(quire_r[QUIRE_W-1] & prod_tc_w[QUIRE_W-1] & ~quire_next_w[QUIRE_W-1]);
+// Overflow: signs of quire and effective addend agree but result sign differs
+wire eff_neg_w = prod_sign_w & (|prod_fixed_w);
+wire acc_ovf_w = (~quire_r[QUIRE_W-1] & ~eff_neg_w & quire_next_w[QUIRE_W-1]) |
+	(quire_r[QUIRE_W-1] & eff_neg_w & ~quire_next_w[QUIRE_W-1]);
 
 always @(posedge clk or negedge rst_n) begin
 	if (!rst_n) begin
@@ -135,10 +134,9 @@ always @(posedge clk or negedge rst_n) begin
 		ovf_r <= 1'b0;
 	end else if (mac_start_i & ~done_r & ~prod_inf_w) begin
 		if (acc_ovf_w | prod_ovf_w) begin
-			// Clamp to max positive or max negative on overflow
-			quire_r <= prod_tc_w[QUIRE_W-1] ?
-				{1'b1, {QUIRE_W-1{1'b0}}} + 1 :  // most negative representable
-				{1'b0, {QUIRE_W-1{1'b1}}};        // most positive representable
+			quire_r <= prod_sign_w ?
+				{1'b1, {QUIRE_W-1{1'b0}}} + 1 :
+				{1'b0, {QUIRE_W-1{1'b1}}};
 		end else begin
 			quire_r <= quire_next_w;
 		end
@@ -151,37 +149,24 @@ end
 // =============================================
 
 wire quire_zero_w = (quire_r == {QUIRE_W{1'b0}});
-wire quire_sign_w = quire_r[QUIRE_W-1];
-wire [QUIRE_W-1:0] quire_abs_w = quire_sign_w ? -quire_r : quire_r;
-
-// Leading one detector on magnitude (64-bit)
-wire [5:0] lzc_w; // leading zero count
-LOD_N #(.N(QUIRE_W)) quire_lod(.in(quire_abs_w), .out(lzc_w));
 
 // Scale = (63 - lzc) - 32 = 31 - lzc
 wire signed [6:0] q_scale_w = 7'sd31 - {1'b0, lzc_w};
 
-// Left-shift quire magnitude so leading 1 is at bit 63
-wire [QUIRE_W-1:0] quire_shifted_w;
-DSR_left_N_S #(.N(QUIRE_W), .S(6)) quire_shift(
-	.a(quire_abs_w), .b(lzc_w), .c(quire_shifted_w));
-
-// Extract mantissa, G, R, S from shifted quire
-// Bit 63 = leading 1 (implicit)
-// Bits [62:62-(N-es-2)] = fraction bits for posit
+// Extract mantissa, G, R, S from shifted quire (valid when done_r=1)
 wire [N-es-2:0] q_frac_w = quire_shifted_w[QUIRE_W-2 : QUIRE_W-2-(N-es-2)];
 wire q_G_w = quire_shifted_w[QUIRE_W-2-(N-es-1)];
 wire q_R_w = quire_shifted_w[QUIRE_W-2-(N-es)];
 wire q_St_w = |quire_shifted_w[QUIRE_W-2-(N-es+1):0];
 
-// Decompose scale into regime and exponent using reg_exp_op
+// Decompose scale into regime and exponent
 wire [es-1:0] q_e_o_w;
 wire [Bs:0] q_r_o_w;
 reg_exp_op #(.es(es), .Bs(Bs)) quire_reg_exp(
 	.exp_o(q_scale_w[es+Bs:0]), .e_o(q_e_o_w), .r_o(q_r_o_w[Bs-1:0]));
 assign q_r_o_w[Bs] = 1'b0;
 
-// Pack: regime indicator + sign + exponent + fraction + GRS
+// Pack: regime indicator + exponent + fraction + GRS
 wire [2*N-1+3:0] q_tmp_o_w = {
 	{N{~q_scale_w[es+Bs]}},
 	q_scale_w[es+Bs],
@@ -214,9 +199,8 @@ wire [N-1:0] q_posit_abs_w = (q_r_o_w < N-es-2) ? q_rnd_w[N-1:0] : q_tmp1_o_w[2*
 wire [N-1:0] q_posit_signed_w = quire_sign_w ? -q_posit_abs_w : q_posit_abs_w;
 
 // Final posit output
-// Overflow → maxpos (positive) or -maxpos (negative), preserving sign
-wire [N-1:0] maxpos_w = {1'b0, {N-1{1'b1}}};        // 0x7F
-wire [N-1:0] neg_maxpos_w = {1'b1, {N-2{1'b0}}, 1'b1}; // 0x81
+wire [N-1:0] maxpos_w = {1'b0, {N-1{1'b1}}};
+wire [N-1:0] neg_maxpos_w = {1'b1, {N-2{1'b0}}, 1'b1};
 assign posit_o = ovf_r ? (quire_sign_w ? neg_maxpos_w : maxpos_w) :
 	quire_zero_w ? {N{1'b0}} :
 	(~quire_shifted_w[QUIRE_W-1]) ? {quire_sign_w, {N-1{1'b0}}} :
