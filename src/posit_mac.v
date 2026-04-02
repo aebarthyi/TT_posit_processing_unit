@@ -12,8 +12,8 @@ endfunction
 parameter N = 8;
 parameter es = 2;
 parameter Bs = log2(N);
-parameter QUIRE_W = 64;
-parameter QBP = 32;
+parameter QUIRE_W = 32;
+parameter QBP = 16;
 
 input clk, rst_n;
 input [N-1:0] in1_i, in2_i;
@@ -79,8 +79,8 @@ wire signed [7:0] raw_shift_w = $signed({scale_w[Bs+es+1], scale_w}) + SHIFT_BAS
 wire prod_udf_w = raw_shift_w[7];
 wire prod_ovf_w = (~raw_shift_w[7]) & (raw_shift_w > (QUIRE_W - PROD_W));
 
-wire [5:0] left_shift_amt_w = prod_udf_w ? 6'd0 :
-	(prod_ovf_w ? 6'd50 : raw_shift_w[5:0]);
+wire [4:0] left_shift_amt_w = prod_udf_w ? 5'd0 :
+	(prod_ovf_w ? 5'd18 : raw_shift_w[4:0]);
 
 wire [QUIRE_W-1:0] prod_base_w = {{(QUIRE_W-PROD_W){1'b0}}, prod_mN_w};
 
@@ -93,13 +93,13 @@ wire [QUIRE_W-1:0] prod_base_w = {{(QUIRE_W-PROD_W){1'b0}}, prod_mN_w};
 wire quire_sign_w = quire_r[QUIRE_W-1];
 wire [QUIRE_W-1:0] quire_abs_w = quire_sign_w ? -quire_r : quire_r;
 
-wire [5:0] lzc_w;
+wire [4:0] lzc_w;
 LOD_N #(.N(QUIRE_W)) quire_lod(.in(quire_abs_w), .out(lzc_w));
 
 wire [QUIRE_W-1:0] shared_shift_in_w = done_r ? quire_abs_w : prod_base_w;
-wire [5:0] shared_shift_amt_w = done_r ? lzc_w : left_shift_amt_w;
+wire [4:0] shared_shift_amt_w = done_r ? lzc_w : left_shift_amt_w;
 wire [QUIRE_W-1:0] shared_shift_out_w;
-DSR_left_N_S #(.N(QUIRE_W), .S(6)) shared_shift(
+DSR_left_N_S #(.N(QUIRE_W), .S(5)) shared_shift(
 	.a(shared_shift_in_w), .b(shared_shift_amt_w), .c(shared_shift_out_w));
 
 // Product placement (valid when done_r=0)
@@ -150,8 +150,8 @@ end
 
 wire quire_zero_w = (quire_r == {QUIRE_W{1'b0}});
 
-// Scale = (63 - lzc) - 32 = 31 - lzc
-wire signed [6:0] q_scale_w = 7'sd31 - {1'b0, lzc_w};
+// Scale = (31 - lzc) - 16 = 15 - lzc
+wire signed [6:0] q_scale_w = 7'sd15 - {2'b0, lzc_w};
 
 // Extract mantissa, G, R, S from shifted quire (valid when done_r=1)
 wire [N-es-2:0] q_frac_w = quire_shifted_w[QUIRE_W-2 : QUIRE_W-2-(N-es-2)];

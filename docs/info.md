@@ -17,9 +17,9 @@ If you want to read more: <https://posithub.org/docs/Posits4.pdf>
 
 ## How it works
 
-This is a posit multiply-accumulate (MAC) unit with a 64-bit quire register. It takes two 8-bit posit inputs (es=2), multiplies them, and accumulates the exact product into the quire. You can then read the quire back out as a posit8, or clear it for the next dot product.
+This is a posit multiply-accumulate (MAC) unit with a 32-bit quire register. It takes two 8-bit posit inputs (es=2), multiplies them, and accumulates the exact product into the quire. You can then read the quire back out as a posit8, or clear it for the next dot product.
 
-The 64-bit quire uses Q32.32 fixed-point format, covering values from 2^-32 to 2^31. This is a compromise — a full-precision quire for posit(8,2) would need 128 bits, but 64 bits covers the practical range while fitting comfortably on a 1x1 tile.
+The 32-bit quire uses Q16.16 fixed-point format, covering values from 2^-16 to 2^15. This is a compromise — a full-precision quire for posit(8,2) would need 128 bits, but 32 bits fits on a 1x1 tile while still covering the most practical range of posit8 values.
 
 The multiply path reuses building blocks from PACoGen: <https://github.com/manish-kj/PACoGen>
 Which was part of this paper: <https://ieeexplore.ieee.org/document/8731915>
@@ -66,7 +66,7 @@ The testbench checks basic MAC, READ, and CLEAR operations using known perfectly
 
 It also runs a dot product fuzz test — random-length sequences of MACs with random posit8 values — and compares the result against a float reference using the softposit python library.
 
-Rounding errors at the edges of the quire's Q32.32 range are expected.
+Rounding errors at the edges of the quire's Q16.16 range are expected.
 
 ## External hardware
 
